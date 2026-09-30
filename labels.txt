@@ -1,0 +1,7 @@
+Elephant
+Deer
+Nilgai
+Wild_Boar
+Leopard
+Wild_Animal
+Accident
