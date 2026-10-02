@@ -3,277 +3,467 @@ import os
 import time
 from datetime import datetime
 
-from camera import start_camera
-from detection import PransthambhDetector
-from alert_manager import AlertManager
+from ultralytics import YOLO
 from firebase_client import upload_detection
-from telegram_alert import send_telegram_alert
-
-from config import (
-    POLE_ID,
-    ALERTS_FOLDER,
-    ACCIDENT_CLASS
-)
 
 
 # =========================================================
-# PRANSTHAMBH MAIN SYSTEM
+# PRANSTHAMBH - AI CAMERA + FIREBASE
 # =========================================================
 
-def main():
+MODEL_PATH = "best.pt"
 
-    print("=" * 60)
-    print("       PRANSTHAMBH")
-    print("SMART WILDLIFE & ACCIDENT DETECTION SYSTEM")
-    print("=" * 60)
+CAMERA_INDEX = 0
 
-    # Create folders
-    os.makedirs(ALERTS_FOLDER, exist_ok=True)
+CONFIDENCE_THRESHOLD = 0.50
 
-    # Start camera
-    camera = start_camera()
+POLE_ID = "POLE_001"
 
-    # Load AI
-    detector = PransthambhDetector()
+ALERT_COOLDOWN = 30
 
-    # GPIO alert manager
-    alert_manager = AlertManager()
+ALERTS_FOLDER = "alerts"
 
-    # Last alert time
-    last_alert_time = 0
+os.makedirs(ALERTS_FOLDER, exist_ok=True)
 
-    print()
-    print("PRANSTHAMBH SYSTEM READY")
-    print("AI detection started")
-    print("Press Q to stop")
-    print()
 
-    try:
+# =========================================================
+# LOAD AI MODEL
+# =========================================================
 
-        while True:
+print("=" * 60)
+print("        PRANSTHAMBH")
+print("AI WILDLIFE & ACCIDENT DETECTION")
+print("=" * 60)
 
-            ret, frame = camera.read()
+print()
+print("Loading AI model...")
 
-            if not ret:
+model = YOLO(MODEL_PATH)
 
-                print("Camera frame error")
+print("Model loaded successfully!")
+print("Classes:", model.names)
+
+
+# =========================================================
+# START CAMERA
+# =========================================================
+
+camera = cv2.VideoCapture(CAMERA_INDEX)
+
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+if not camera.isOpened():
+
+    print("ERROR: Camera could not be opened.")
+    exit()
+
+print("Camera started successfully.")
+print("AI detection started.")
+print()
+print("Press Q to stop.")
+print()
+
+
+# =========================================================
+# ALERT CONTROL
+# =========================================================
+
+last_alert_time = 0
+
+
+# =========================================================
+# MAIN LOOP
+# =========================================================
+
+try:
+
+    while True:
+
+        ret, frame = camera.read()
+
+        if not ret:
+
+            print("Camera frame error.")
+            continue
+
+
+        # -------------------------------------------------
+        # AI DETECTION
+        # -------------------------------------------------
+
+        results = model(
+            frame,
+            conf=CONFIDENCE_THRESHOLD,
+            verbose=False
+        )
+
+
+        detections = []
+
+
+        # -------------------------------------------------
+        # READ DETECTIONS
+        # -------------------------------------------------
+
+        for result in results:
+
+            if result.boxes is None:
                 continue
 
-            # =================================================
-            # AI DETECTION
-            # =================================================
 
-            detections = detector.detect(frame)
+            for box in result.boxes:
 
-            # =================================================
-            # DRAW BOX + CLASS + CONFIDENCE
-            # =================================================
+                class_id = int(box.cls[0])
 
-            annotated_frame = detector.draw_detections(
-                frame,
-                detections
-            )
+                confidence = float(box.conf[0])
 
-            # =================================================
-            # NORMAL CONDITION
-            # =================================================
+                class_name = model.names[class_id]
 
-            if len(detections) == 0:
 
-                alert_manager.normal_state()
-
-                cv2.putText(
-                    annotated_frame,
-                    "STATUS: NORMAL",
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2
+                x1, y1, x2, y2 = map(
+                    int,
+                    box.xyxy[0].tolist()
                 )
 
-            # =================================================
-            # DETECTION CONDITION
-            # =================================================
+
+                detections.append({
+
+                    "class_name": class_name,
+
+                    "confidence": confidence,
+
+                    "bbox": [x1, y1, x2, y2]
+
+                })
+
+
+        # -------------------------------------------------
+        # DRAW DETECTIONS
+        # -------------------------------------------------
+
+        annotated_frame = frame.copy()
+
+
+        for detection in detections:
+
+            x1, y1, x2, y2 = detection["bbox"]
+
+            class_name = detection["class_name"]
+
+            confidence = detection["confidence"]
+
+
+            label = (
+                f"{class_name} "
+                f"{confidence * 100:.1f}%"
+            )
+
+
+            # Bounding box
+
+            cv2.rectangle(
+
+                annotated_frame,
+
+                (x1, y1),
+
+                (x2, y2),
+
+                (0, 0, 255),
+
+                2
+
+            )
+
+
+            # Label background
+
+            cv2.rectangle(
+
+                annotated_frame,
+
+                (x1, max(0, y1 - 30)),
+
+                (
+                    x1 + len(label) * 11 + 10,
+                    y1
+                ),
+
+                (0, 0, 255),
+
+                -1
+
+            )
+
+
+            # Label text
+
+            cv2.putText(
+
+                annotated_frame,
+
+                label,
+
+                (x1 + 5, y1 - 8),
+
+                cv2.FONT_HERSHEY_SIMPLEX,
+
+                0.55,
+
+                (255, 255, 255),
+
+                2
+
+            )
+
+
+        # -------------------------------------------------
+        # STATUS
+        # -------------------------------------------------
+
+        if len(detections) == 0:
+
+            status_text = "STATUS: NORMAL"
+
+            status_color = (0, 255, 0)
+
+        else:
+
+            status_text = "STATUS: DETECTION"
+
+            status_color = (0, 0, 255)
+
+
+        cv2.putText(
+
+            annotated_frame,
+
+            status_text,
+
+            (20, 35),
+
+            cv2.FONT_HERSHEY_SIMPLEX,
+
+            0.8,
+
+            status_color,
+
+            2
+
+        )
+
+
+        # Pole ID
+
+        cv2.putText(
+
+            annotated_frame,
+
+            f"POLE: {POLE_ID}",
+
+            (20, 70),
+
+            cv2.FONT_HERSHEY_SIMPLEX,
+
+            0.65,
+
+            (255, 255, 255),
+
+            2
+
+        )
+
+
+        # PRANSTHAMBH
+
+        cv2.putText(
+
+            annotated_frame,
+
+            "PRANSTHAMBH AI LIVE",
+
+            (20, 105),
+
+            cv2.FONT_HERSHEY_SIMPLEX,
+
+            0.6,
+
+            (255, 255, 255),
+
+            2
+
+        )
+
+
+        # -------------------------------------------------
+        # SEND DETECTION TO FIREBASE
+        # -------------------------------------------------
+
+        current_time = time.time()
+
+
+        if (
+
+            len(detections) > 0
+
+            and
+
+            current_time - last_alert_time >= ALERT_COOLDOWN
+
+        ):
+
+
+            # Highest confidence detection
+
+            best_detection = max(
+
+                detections,
+
+                key=lambda x: x["confidence"]
+
+            )
+
+
+            class_name = best_detection["class_name"]
+
+            confidence = best_detection["confidence"]
+
+
+            print()
+            print("=" * 50)
+
+            print("DETECTION FOUND!")
+
+            print(
+                f"Animal/Object : {class_name}"
+            )
+
+            print(
+                f"Confidence    : "
+                f"{confidence * 100:.2f}%"
+            )
+
+            print(
+                f"Pole ID       : {POLE_ID}"
+            )
+
+
+            # -------------------------------------------------
+            # SAVE ANNOTATED IMAGE
+            # -------------------------------------------------
+
+            timestamp = datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
+
+
+            image_filename = (
+                f"alert_{timestamp}.jpg"
+            )
+
+
+            image_path = os.path.join(
+
+                ALERTS_FOLDER,
+
+                image_filename
+
+            )
+
+
+            cv2.imwrite(
+
+                image_path,
+
+                annotated_frame
+
+            )
+
+
+            print(
+                f"Image saved: {image_path}"
+            )
+
+
+            # -------------------------------------------------
+            # FIREBASE UPLOAD
+            # -------------------------------------------------
+
+            firebase_result = upload_detection(
+
+                class_name=class_name,
+
+                confidence=confidence,
+
+                pole_id=POLE_ID,
+
+                image_path=image_path
+
+            )
+
+
+            if firebase_result:
+
+                print(
+                    "✅ FIREBASE: DATA SENT SUCCESSFULLY"
+                )
 
             else:
 
-                alert_manager.alert_state()
+                print(
+                    "❌ FIREBASE: DATA SEND FAILED"
+                )
 
-                current_time = time.time()
 
-                # Print detections
-                for detection in detections:
+            print("=" * 50)
 
-                    class_name = detection["class_name"]
-                    confidence = detection["confidence"]
 
-                    print(
-                        f"DETECTED: {class_name} | "
-                        f"Confidence: "
-                        f"{confidence * 100:.1f}% | "
-                        f"Pole: {POLE_ID}"
-                    )
+            # Start cooldown
 
-                # =================================================
-                # COOLDOWN
-                # =================================================
+            last_alert_time = current_time
 
-                if current_time - last_alert_time >= 30:
 
-                    # Use highest-confidence detection
-                    best_detection = max(
-                        detections,
-                        key=lambda x: x["confidence"]
-                    )
+        # -------------------------------------------------
+        # SHOW CAMERA
+        # -------------------------------------------------
 
-                    class_name = best_detection["class_name"]
-                    confidence = best_detection["confidence"]
+        cv2.imshow(
 
-                    # =================================================
-                    # SAVE ANNOTATED FRAME
-                    # =================================================
+            "PRANSTHAMBH - AI CAMERA",
 
-                    timestamp = datetime.now().strftime(
-                        "%Y%m%d_%H%M%S"
-                    )
+            annotated_frame
 
-                    image_path = os.path.join(
-                        ALERTS_FOLDER,
-                        f"alert_{timestamp}.jpg"
-                    )
+        )
 
-                    cv2.imwrite(
-                        image_path,
-                        annotated_frame
-                    )
 
-                    print(
-                        f"Alert image saved: {image_path}"
-                    )
+        # -------------------------------------------------
+        # PRESS Q TO EXIT
+        # -------------------------------------------------
 
-                    # =================================================
-                    # FIREBASE
-                    # =================================================
+        key = cv2.waitKey(1) & 0xFF
 
-                    try:
 
-                        firebase_result = upload_detection(
-                            class_name=class_name,
-                            confidence=confidence,
-                            pole_id=POLE_ID,
-                            image_path=image_path
-                        )
+        if key == ord("q"):
 
-                        if firebase_result:
-
-                            print(
-                                "Firebase event uploaded"
-                            )
-
-                        else:
-
-                            print(
-                                "Firebase upload skipped/failed"
-                            )
-
-                    except Exception as e:
-
-                        print(
-                            "Firebase error:",
-                            e
-                        )
-
-                    # =================================================
-                    # TELEGRAM
-                    # =================================================
-
-                    try:
-
-                        telegram_result = send_telegram_alert(
-                            class_name=class_name,
-                            confidence=confidence,
-                            pole_id=POLE_ID,
-                            image_path=image_path
-                        )
-
-                        if telegram_result:
-
-                            print(
-                                "Telegram alert sent"
-                            )
-
-                        else:
-
-                            print(
-                                "Telegram alert failed"
-                            )
-
-                    except Exception as e:
-
-                        print(
-                            "Telegram error:",
-                            e
-                        )
-
-                    # Update cooldown
-                    last_alert_time = current_time
-
-                    print(
-                        "Alert cooldown started: 30 seconds"
-                    )
-
-            # =================================================
-            # TOP INFORMATION
-            # =================================================
-
-            cv2.putText(
-                annotated_frame,
-                f"PRANSTHAMBH | {POLE_ID}",
-                (20, 75),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 255),
-                2
-            )
-
-            # =================================================
-            # DISPLAY
-            # =================================================
-
-            cv2.imshow(
-                "PRANSTHAMBH AI LIVE",
-                annotated_frame
-            )
-
-            # Q = Quit
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord("q"):
-
-                print("Stopping PRANSTHAMBH...")
-                break
-
-    except KeyboardInterrupt:
-
-        print()
-        print("System interrupted by user")
-
-    finally:
-
-        camera.release()
-
-        cv2.destroyAllWindows()
-
-        alert_manager.normal_state()
-
-        print("PRANSTHAMBH stopped safely")
+            break
 
 
 # =========================================================
-# START
+# STOP SAFELY
 # =========================================================
 
-if __name__ == "__main__":
+except KeyboardInterrupt:
 
-    main()
+    print()
+    print("System stopped by user.")
+
+
+finally:
+
+    camera.release()
+
+    cv2.destroyAllWindows()
+
+    print()
+    print("PRANSTHAMBH stopped safely.")

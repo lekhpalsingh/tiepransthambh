@@ -1,27 +1,28 @@
+import os
 import firebase_admin
 from firebase_admin import credentials, db
 from datetime import datetime
-import os
 
 FIREBASE_KEY = "firebase-key.json"
 
-# Firebase Realtime Database URL
-FIREBASE_DATABASE_URL = "YOUR_FIREBASE_DATABASE_URL"
+# IMPORTANT:
+# Yahan apna actual Firebase Realtime Database URL paste karo.
+FIREBASE_DATABASE_URL = "https://pransthambh-ai-default-rtdb.firebaseio.com/"
 
-_firebase_initialized = False
+firebase_initialized = False
 
 
 def initialize_firebase():
 
-    global _firebase_initialized
+    global firebase_initialized
 
-    if _firebase_initialized:
+    if firebase_initialized:
         return True
 
     try:
 
         if not os.path.exists(FIREBASE_KEY):
-            print("Firebase key not found")
+            print("ERROR: firebase-key.json not found")
             return False
 
         cred = credentials.Certificate(FIREBASE_KEY)
@@ -33,15 +34,16 @@ def initialize_firebase():
             }
         )
 
-        _firebase_initialized = True
+        firebase_initialized = True
 
-        print("Firebase connected successfully")
+        print("Firebase connected successfully!")
 
         return True
 
     except Exception as e:
 
-        print("Firebase connection failed:", e)
+        print("Firebase connection failed:")
+        print(e)
 
         return False
 
@@ -60,32 +62,41 @@ def upload_detection(
 
         now = datetime.now()
 
-        data = {
+        event_data = {
+
             "date": now.strftime("%Y-%m-%d"),
+
             "time": now.strftime("%H:%M:%S"),
+
             "timestamp": now.isoformat(),
 
             "pole_id": pole_id,
 
-            "detection": class_name,
+            "detection_class": class_name,
 
-            "confidence": round(confidence, 3),
+            "confidence": round(confidence, 4),
 
-            "status": (
-                "ACCIDENT"
-                if class_name == "Accident"
-                else "WILDLIFE DETECTED"
+            "confidence_percent": round(
+                confidence * 100,
+                2
             ),
 
-            "image": image_path if image_path else ""
+            "status":
+                "ACCIDENT_DETECTED"
+                if class_name == "Accident"
+                else "WILDLIFE_DETECTED",
+
+            "image_path":
+                image_path if image_path else ""
+
         }
 
         ref = db.reference("PRANSTHAMBH/Events")
 
-        new_event = ref.push(data)
+        new_event = ref.push(event_data)
 
         print(
-            "Firebase uploaded:",
+            "Firebase event uploaded:",
             new_event.key
         )
 
@@ -93,6 +104,7 @@ def upload_detection(
 
     except Exception as e:
 
-        print("Firebase upload failed:", e)
+        print("Firebase upload failed:")
+        print(e)
 
         return False
